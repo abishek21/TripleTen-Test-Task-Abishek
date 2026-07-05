@@ -26,3 +26,14 @@ one should not block an entire pipeline. I fixed this by adding a delivery count
 using `XPENDING`: if a message has been re-delivered more than `MAX_DELIVERIES` times, ACK
 it to clear it from the PEL and log it as a dead-letter. This ensures Phase 1 always
 drains and Phase 2 is always reachable, regardless of individual message failures.
+
+## How I used AI
+
+I used AI (GitHub Copilot) as a coding assistant throughout this project. The design
+decisions — delivery semantics, the state machine approach for idempotency, the two-phase
+consumer group pattern, and the poison message handling — were mine. I directed the
+implementation strategy and told the AI what to build at each step. The AI helped me write
+the code efficiently, articulate my reasoning clearly in the ADR, and catch syntax issues
+I'd have spent time debugging manually. Every piece of AI output was reviewed and tested
+by me — the poison message fix above is one example where that review process caught a
+real gap.
