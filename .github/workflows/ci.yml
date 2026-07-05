@@ -1,0 +1,95 @@
+name: ci
+
+# This pipeline IS the definition of done. On the prototype as shipped it is RED.
+# Your job is to make it GREEN by making the pipeline correct and resilient.
+#
+# Two jobs:
+#   lint            - fast feedback: every service / script compiles
+#   integration     - boots the whole stack and runs the acceptance check as a gate
+#   smoke-test      - verifies freshly built images start and respond to /health
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Byte-compile all Python
+        run: python -m compileall -q services scripts
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      matrix:
+        service:
+          - { name: producer, port: 8000, path: ./services/producer }
+          - { name: payments, port: 8001, path: ./services/payments }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ${{ matrix.service.name }} image
+        run: docker build -t ${{ matrix.service.name }}:test ${{ matrix.service.path }}
+
+      - name: Run ${{ matrix.service.name }} container
+        run: |
+          docker run -d --name ${{ matrix.service.name }} \
+            -p ${{ matrix.service.port }}:${{ matrix.service.port }} \
+            ${{ matrix.service.name }}:test
+
+      - name: Wait for /health to respond
+        run: |
+          for i in $(seq 1 15); do
+            if curl -fs http://localhost:${{ matrix.service.port }}/health > /dev/null; then
+              echo "${{ matrix.service.name }} /health OK"; exit 0
+            fi
+            sleep 2
+          done
+          echo "${{ matrix.service.name }} /health never responded"; exit 1
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f ${{ matrix.service.name }}
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: [lint, smoke-test]  # only run if lint and smoke-test pass
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the stack
+        run: docker compose up --build -d
+
+      - name: Wait for the producer to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fs http://localhost:8000/health > /dev/null; then
+              echo "producer ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "producer never became ready"; exit 1
+
+      - name: Give the worker time to subscribe
+        run: sleep 10
+
+      - name: Generate load (includes duplicate orders)
+        run: python scripts/load.py
+
+      - name: Acceptance check (must be correct under duplicates + flaky payments)
+        run: python scripts/check.py
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
